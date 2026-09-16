@@ -150,6 +150,7 @@ td .sub{font-size:12px;color:var(--encre-3)}
 .zone{display:inline-block;font-size:10.5px;font-weight:700;padding:1px 6px;border-radius:4px;color:#fff;vertical-align:1px;letter-spacing:.02em}
 .zone.H1{background:#2C6FB5} .zone.H2{background:#E08A2E} .zone.H3{background:#C8422B} .zone.DOM{background:var(--vert)}
 table.mini{width:100%;border-collapse:collapse;font-size:13px} table.mini th{text-align:left;font-weight:600;color:var(--encre-3);font-size:11.5px;text-transform:uppercase;letter-spacing:.04em;padding:6px 8px;border-bottom:1px solid var(--trait)} table.mini td{padding:7px 8px;border-bottom:1px solid #F1F4F4}
+.gsync{font-size:11.5px;font-weight:600;padding:3px 8px;border-radius:999px;margin-right:6px} .gsync.ok{color:var(--vert);background:var(--vert-pale)} .gsync.sync{color:var(--bleu);background:#E8F3F5} .gsync.err{color:var(--rouge);background:#FBE9E6}
 /* panneau */
 .ovl{position:fixed;inset:0;background:rgba(16,42,46,.42);z-index:80;display:flex;justify-content:flex-end;animation:ovin .25s ease}
 .ovl.closing{animation:ovout .2s ease forwards}
@@ -246,9 +247,10 @@ table.mini{width:100%;border-collapse:collapse;font-size:13px} table.mini th{tex
   <img src="" id="hlogo" alt="" style="width:30px;height:30px;border-radius:8px">
   <div class="logo" id="hlogotxt">Dom<span>Base</span></div>
   <div class="tabs" id="tabs"></div>
-  <div class="who"><span id="whoN"></span><button class="btn g sm" id="bOut">Quitter</button></div>
+  <div class="who"><span id="gsync" class="gsync" style="display:none"></span><span id="whoN"></span><button class="btn g sm" id="bOut">Quitter</button></div>
   <button class="btn" id="bNew">Nouveau client</button>
 </div></div>
+<div id="gsave" style="display:none;background:var(--rouge);color:#fff;text-align:center;padding:8px 14px;font-size:13px;font-weight:600">Sauvegarde impossible sur ce poste — vos modifications ne sont pas conservées. Fermez les onglets DomBase en double, puis rechargez la page.</div>
 <div id="gprog" style="display:none;background:var(--carte);border-bottom:1px solid var(--trait)"><div style="max-width:1120px;margin:0 auto;padding:6px 18px;display:flex;align-items:center;gap:10px;font-size:12.5px;color:var(--encre-2)"><span>Enrichissement</span><div class="bar" style="flex:1"><i style="width:0"></i></div></div></div>
 <div class="wrap" id="view"></div>
 <button class="abtn" id="bAssist" aria-label="Recherche"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.2-3.2"/></svg></button>
@@ -592,13 +594,36 @@ const FICHES=[
 ];
 
 /* ---------- stockage ---------- */
-const Store=(()=>{const ws=typeof window!=='undefined'&&window.storage&&typeof window.storage.get==='function';return{
- async get(k){if(ws){try{const r=await window.storage.get(k);return r?JSON.parse(r.value):null;}catch(e){return null;}}
-   try{const v=localStorage.getItem(k);return v?JSON.parse(v):null;}catch(e){return null;}},
- async set(k,v){const s=JSON.stringify(v);if(ws){await window.storage.set(k,s);return;}try{localStorage.setItem(k,s);}catch(e){throw new Error('stockage plein');}},
- async del(k){if(ws){try{await window.storage.delete(k);}catch(e){}return;}localStorage.removeItem(k);}};})();
+const Store=(()=>{
+  const ws=typeof window!=='undefined'&&window.storage&&typeof window.storage.get==='function';
+  let dbp=null;
+  const idb=()=>{if(dbp)return dbp;dbp=new Promise((res,rej)=>{try{const r=indexedDB.open('dombase',1);r.onupgradeneeded=()=>{r.result.createObjectStore('kv');};r.onsuccess=()=>res(r.result);r.onerror=()=>rej(r.error);r.onblocked=()=>rej(new Error('blocked'));}catch(e){rej(e);}});return dbp;};
+  const hasIDB=typeof indexedDB!=='undefined';
+  async function iget(k){const db=await idb();return new Promise((res,rej)=>{const t=db.transaction('kv','readonly').objectStore('kv').get(k);t.onsuccess=()=>res(t.result===undefined?null:t.result);t.onerror=()=>rej(t.error);});}
+  async function iset(k,v){const db=await idb();return new Promise((res,rej)=>{const tx=db.transaction('kv','readwrite');tx.objectStore('kv').put(v,k);tx.oncomplete=()=>res();tx.onerror=()=>rej(tx.error);tx.onabort=()=>rej(tx.error||new Error('abort'));});}
+  async function idel(k){const db=await idb();return new Promise((res,rej)=>{const tx=db.transaction('kv','readwrite');tx.objectStore('kv').delete(k);tx.oncomplete=()=>res();tx.onerror=()=>rej(tx.error);});}
+  let mode=ws?'artifact':hasIDB?'idb':'local';
+  return{
+    mode:()=>mode,
+    async get(k){
+      if(mode==='artifact'){try{const r=await window.storage.get(k);return r?JSON.parse(r.value):null;}catch(e){return null;}}
+      if(mode==='idb'){try{const v=await iget(k);if(v!==null)return v;}catch(e){mode='local';}}
+      try{const v=localStorage.getItem(k);return v?JSON.parse(v):null;}catch(e){return null;}
+    },
+    async set(k,v){
+      if(mode==='artifact'){await window.storage.set(k,JSON.stringify(v));return;}
+      if(mode==='idb'){try{await iset(k,v);try{localStorage.removeItem(k);}catch(e){}return;}catch(e){mode='local';}}
+      try{localStorage.setItem(k,JSON.stringify(v));}catch(e){throw new Error('stockage plein');}
+    },
+    async del(k){
+      if(mode==='artifact'){try{await window.storage.delete(k);}catch(e){}return;}
+      if(mode==='idb'){try{await idel(k);}catch(e){}}
+      try{localStorage.removeItem(k);}catch(e){}
+    }
+  };
+})();
 const K='dombase:fiches', KS='dombase:session', KQ='dombase:file';
-const DATA_VERSION='2026-09-16i';
+const DATA_VERSION='2026-09-16j';
 const cleFiche=f=>(f.siret&&'s:'+f.siret)||(f.tel&&'t:'+f.tel.replace(/\D/g,''))||('n:'+norm((f.raison_sociale||'')+(f.nom||'')+(f.prenom||''))+'|'+(f.cp||''));
 
 const FMAP=Object.fromEntries(FICHES.map(f=>[f[0],f]));
@@ -630,9 +655,8 @@ const zoneTag=f=>{const z=zoneClim(f);if(!z)return '';const cls=z==='DOM-TOM'||z
 const INDIC={'971':'590','972':'596','973':'594','974':'262','976':'262'};
 function telIntl(t,f){
   const d=(t||'').replace(/\D/g,'');if(d.length!==10||d[0]!=='0')return t||'';
-  let ind='';
+  let ind='33';
   if(/^0(590|690)/.test(d))ind='590';else if(/^0(596|696)/.test(d))ind='596';else if(/^0(594|694)/.test(d))ind='594';else if(/^0(262|692|693)/.test(d))ind='262';else if(/^0(269|639)/.test(d))ind='262';
-  if(!ind){const dp=(f&&f.dept)||'';ind=INDIC[dp]||(dp||(f&&f.territoire&&f.territoire!=='Métropole'&&!/corse/i.test(f.territoire))?(INDIC[dp]||(f&&INDIC[({'Guadeloupe':'971','Martinique':'972','Guyane':'973','La Réunion':'974','Mayotte':'976'})[f.territoire]])||'33'):'33');}
   const r=d.slice(1);return '+'+ind+' '+r[0]+' '+r.slice(1).replace(/(\d{2})(?=\d)/g,'$1 ');
 }
 const telHref=(t,f)=>'tel:'+telIntl(t,f).replace(/\s/g,'');
@@ -670,7 +694,7 @@ function nomClient(f){return f.raison_sociale||[f.prenom,f.nom].filter(Boolean).
 function qualite(f){return (f.tel?2:0)+(f.raison_sociale?1:0)+(f.cp?1:0)+(f.naf?3:0)+(f.siret?2:0)+(f.siren?1:0);}
 
 const TRANCHE=300;
-function compact(f){const o={};for(const k in f){const v=f[k];if(v===''||v===null||v===undefined||(Array.isArray(v)&&!v.length))continue;o[k]=v;}return o;}
+function compact(f){const o={};for(const k in f){if(k==='_h'||k==='_dirty')continue;const v=f[k];if(v===''||v===null||v===undefined||(Array.isArray(v)&&!v.length))continue;o[k]=v;}return o;}
 function depuisDATA(){
   return DATA.map(row=>{
     const o={id:uid(),statut:'Non traité',suivi:[],naf:'',naf_lib:'',enrichi:''};
@@ -704,30 +728,38 @@ async function load(){
         if(a.autres&&a.autres.length)f.autres=a.autres;
         rep++;});
       // fiches créées à la main dans l'ancienne version
-      anc.filter(f=>!pris.has(f)&&(f.source==='Saisie manuelle'||(f.source||'').startsWith('Import')||f.enrichi||(f.suivi&&f.suivi.length))).forEach(f=>fiches.push(f));
+      anc.filter(f=>!pris.has(f)&&(f.source==='Saisie manuelle'||(f.source||'').startsWith('Import'))).forEach(f=>fiches.push(f));
       fiches.forEach(recalc);
       const nd=dedoublonner();
       console.log('Migration : '+rep+' fiches réconciliées, '+nd+' doublons fusionnés');
     }
     await chargerFile();
+    baseline();
     await save();
     return;
   }
+  baseline();
   await chargerFile();
 }
+function baseline(){fiches.forEach(f=>{f._h=JSON.stringify(compact(f));if(f._dirty===undefined)f._dirty=false;});}
 async function chargerFile(){
   try{const q=await Store.get(KQ);if(Array.isArray(q)){const byId=new Map();fiches.forEach(f=>[cleFiche(f),...clesDoublon(f)].forEach(k=>{if(!byId.has(k))byId.set(k,f);}));enrichFile=q.map(x=>({f:byId.get(x.k),cands:x.cands})).filter(x=>x.f&&!x.f.naf);}}catch(e){}
 }
 let saveErr=false;
+function marquer(f){f._upd=new Date().toISOString();f._par=user&&user.nom||'';}
+function bandeauSauvegarde(ok){const b=document.getElementById('gsave');if(!b)return;b.style.display=ok?'none':'';}
 async function save(){
   try{
+    fiches.forEach(f=>{const j=JSON.stringify(compact(f));if(f._h!==j){f._h=j;marquer(f);f._dirty=true;}});
     const n=Math.ceil(fiches.length/TRANCHE);
     for(let i=0;i<n;i++)await Store.set(K+':'+i,fiches.slice(i*TRANCHE,(i+1)*TRANCHE).map(compact));
     await Store.set(K+':meta',{n,date:AUJ(),version:DATA_VERSION});
-    try{await Store.set(KQ,(enrichFile||[]).map(x=>({k:cleFiche(x.f),cands:x.cands.map(c=>({siren:c.siren,nom_complet:c.nom_complet,nom_raison_sociale:c.nom_raison_sociale,activite_principale:c.activite_principale,etat_administratif:c.etat_administratif,dirigeants:(c.dirigeants||[]).slice(0,2),siege:c.siege?{siret:c.siege.siret,adresse:c.siege.adresse,code_postal:c.siege.code_postal,libelle_commune:c.siege.libelle_commune,activite_principale:c.siege.activite_principale}:null,matching_etablissements:(c.matching_etablissements||[]).slice(0,3).map(e=>({siret:e.siret,adresse:e.adresse,code_postal:e.code_postal,libelle_commune:e.libelle_commune,activite_principale:e.activite_principale})),_score:c._score,_raisons:c._raisons}))})));}catch(e){}
-    saveErr=false;
+    try{await Store.set(KQ,(enrichFile||[]).map(x=>({k:cleFiche(x.f),cands:x.cands.map(c=>({siren:c.siren,nom_complet:c.nom_complet,nom_raison_sociale:c.nom_raison_sociale,activite_principale:c.activite_principale,etat_administratif:c.etat_administratif,dirigeants:(c.dirigeants||[]).slice(0,1).map(d=>({nom:d.nom,prenoms:d.prenoms})),siege:c.siege?{siret:c.siege.siret,adresse:c.siege.adresse,code_postal:c.siege.code_postal,libelle_commune:c.siege.libelle_commune,activite_principale:c.siege.activite_principale}:null,_score:c._score,_raisons:c._raisons}))})));}catch(e){}
+    saveErr=false;bandeauSauvegarde(true);
+    if(Serveur.actif())Serveur.pousser().catch(()=>{});
   }catch(e){
-    if(!saveErr){saveErr=true;toast(location.protocol==='file:'?'Sauvegarde impossible en ouvrant le fichier directement — utilisez l\'adresse internet de DomBase.':'Sauvegarde impossible dans ce navigateur (navigation privée ?). Les modifications ne seront pas conservées.');}
+    saveErr=true;bandeauSauvegarde(false);
+    toast(location.protocol==='file:'?'Sauvegarde impossible en ouvrant le fichier directement — utilisez l\'adresse internet de DomBase.':'Sauvegarde impossible : '+(e&&e.message||'stockage indisponible')+'. Vos modifications ne sont PAS conservées.');
   }
 }
 /* ---------- connexion ---------- */
@@ -755,6 +787,7 @@ function gate(){
     await new Promise(r=>setTimeout(r,450));
     btn.innerHTML='Pense bien, tout ira bien.';
     await new Promise(r=>setTimeout(r,900));
+    if(Serveur.actif()){try{await Serveur.tirer();await Serveur.pousser();}catch(e){}Serveur.demarrer();}
     g.querySelector('.gbox').classList.add('leaving');g.classList.add('out');
     await new Promise(r=>setTimeout(r,320));
     enter(true);try{await Store.set(KS,user);}catch(e){}
@@ -880,7 +913,7 @@ function filtrer(){
     if(fVisee&&f.fiche_visee!==fVisee)return false;
     if(fFiche&&!(f.ops||[]).some(o=>o.fiche===fFiche))return false;
     if(fType&&(f.type_lead||'')!==fType)return false;
-    if(ql){const hay=norm([nomClient(f),f.nom,f.prenom,f.raison_sociale,f.siren,f.siret,f.tel,f.ville,f.cp,f.secteur,f.naf,f.adresse].join(' '));
+    if(ql){const hay=norm([nomClient(f),f.nom,f.prenom,f.raison_sociale,f.siren,f.siret,f.tel,f.ville,f.cp,f.secteur,f.naf,f.adresse,...(f.autres||[]).map(a=>a.nom+' '+a.secteur),...(f.contacts||[]).map(c=>c.prenom+' '+c.nom)].join(' '));
       if(!ql.split(' ').every(w=>hay.includes(w)))return false;}
     return true;
   });
@@ -992,9 +1025,9 @@ function detail(id){
     ${f.contacts&&f.contacts.length?`<div class="xs mut" style="margin-top:10px;margin-bottom:4px">Autres contacts dans l'entreprise</div>${f.contacts.map(c=>`<div class="sm" style="padding:3px 0">${esc([c.prenom,c.nom].filter(Boolean).join(' '))}${c.fonction?` <span class="mut">— ${esc(c.fonction)}</span>`:''}${c.email?` · <a href="mailto:${esc(c.email)}">${esc(c.email)}</a>`:''}</div>`).join('')}`:''}</section>
 
     <section class="sec"><div class="sech"><h3>Entreprise</h3>${!f.naf?`<button class="btn g sm" id="bEnr1">Enrichir</button>`:''}</div>
-    ${kv([['Raison sociale',esc(f.raison_sociale)],['SIREN',esc(f.siren)],['SIRET',esc(f.siret)],
+    ${kv([['Raison sociale',esc(f.raison_sociale)],['SIREN',esc(f.siren)],
       ['Code NAF',f.naf?esc(f.naf)+(f.naf_lib?' — '+esc(f.naf_lib):''):''],
-      ['Secteur',esc(f.secteur)],['Source du secteur',esc(f.secteur_src)],['Effectif',f.effectif?esc(f.effectif)+(/^\d+$/.test(f.effectif)?' salariés':''):''],['Forme juridique',esc(f.forme)],['Création',esc(f.annee)],['Site web',f.site?`<a href="${esc(/^https?:/.test(f.site)?f.site:'http://'+f.site)}" target="_blank" rel="noopener">${esc(f.site.replace(/^https?:\/\//,''))}</a>`:''],['Dirigeant',esc(f.dirigeant)],['Siège',esc(f.siege)]])}
+      ['Secteur',esc(f.secteur)],['Effectif',f.effectif?esc(f.effectif)+(/^\d+$/.test(f.effectif)?' salariés':''):''],['Site web',f.site?`<a href="${esc(/^https?:/.test(f.site)?f.site:'http://'+f.site)}" target="_blank" rel="noopener">${esc(f.site.replace(/^https?:\/\//,''))}</a>`:''],['Dirigeant',esc(f.dirigeant)],['Siège',esc(f.siege)]])}
     ${!f.raison_sociale&&!f.naf?'<div class="xs mut">Aucune société identifiée. L\'enrichissement cherchera par le nom du contact.</div>':''}
     ${f.autres&&f.autres.length?`<div class="xs mut" style="margin-top:12px;margin-bottom:6px">Autres structures du dirigeant</div>${f.autres.map((a,i)=>`<div class="opc" style="border-left-color:var(--encre-3)"><b class="sm">${esc(a.nom)}</b> <span class="tag b">${esc(a.secteur)}</span><div class="xs mut">SIREN ${esc(a.siren)} · NAF ${esc(a.naf)} — ${esc(a.naf_lib)}${a.adresse?' · '+esc(a.adresse):''} · <span data-adel="${i}" style="cursor:pointer;color:var(--rouge)">retirer</span></div></div>`).join('')}`:''}
     <div id="enr1"></div></section>
@@ -1027,7 +1060,8 @@ function detail(id){
       </div>
       <div class="datebox"><input type="date" id="drap" value="${esc(f.rappel||'')}"><span id="draplbl" class="sm mut">${f.rappel?rappelTxt(f.rappel):'Aucune date fixée'}</span></div>
       <textarea id="dn" rows="2" placeholder="Note d'appel…" style="margin-top:10px"></textarea>
-      <button class="btn sm" id="dadd" style="margin-top:8px">Enregistrer l'appel</button>
+      <button class="btn sm" id="dadd" style="margin-top:8px">Valider l'appel et planifier le rappel</button>
+      <div class="xs mut" style="margin-top:6px">Le résultat, la fiche proposée et la note partent dans l'historique ci-dessous ; le rappel apparaît dans « Appels à passer » du tableau de bord à la date choisie.</div>
       <div class="sm" style="margin-top:12px">${(f.suivi||[]).slice().reverse().map(h=>`<div class="hist"><div class="chips" style="gap:4px;margin-bottom:2px"><span class="xs mut">${fmtD(h.d)}</span>${h.statut?`<span class="tag ${h.statut==='RDV pris'||h.statut==='Dossier signé'?'v':h.statut==='Refus'?'r':''}" style="font-size:11px">${esc(h.statut)}</span>`:''}${h.fiche?`<span class="tag b" style="font-size:11px">${esc(h.fiche)}</span>`:''}${h.par?`<span class="xs mut">${esc(h.par)}</span>`:''}</div>${h.t?`<div>${esc(h.t)}</div>`:''}</div>`).join('')||'<span class="mut">Aucun appel enregistré.</span>'}</div>
     </section>
 
@@ -1037,7 +1071,7 @@ function detail(id){
   document.getElementById('ovl').onclick=closeModal;on('cx',closeModal);on('cx2',closeModal);
   const litSuivi=()=>{f.statut=document.getElementById('dst').value;f.rappel=document.getElementById('drap').value;f.fiche_visee=document.getElementById('dfv').value;if(f.statut==='Ne pas recontacter')f.rappel='';};
   on('dsave',async()=>{const av=f.statut;litSuivi();if(f.statut!==av&&f.statut!=='Non traité'){f.suivi=f.suivi||[];f.suivi.push({d:AUJ(),t:'',statut:f.statut,fiche:f.fiche_visee||'',par:user.nom});}await save();closeModal();render();toast('Fiche enregistrée');});
-  on('dadd',async()=>{litSuivi();const t=document.getElementById('dn').value.trim();f.suivi=f.suivi||[];f.suivi.push({d:AUJ(),t,statut:f.statut!=='Non traité'?f.statut:'',fiche:f.fiche_visee||'',par:user.nom});await save();detail(id);toast('Appel enregistré');});
+  on('dadd',async()=>{litSuivi();const t=document.getElementById('dn').value.trim();f.suivi=f.suivi||[];f.suivi.push({d:AUJ(),t,statut:f.statut!=='Non traité'?f.statut:'',fiche:f.fiche_visee||'',par:user.nom});await save();detail(id);toast(f.rappel?'Appel enregistré · rappel planifié '+fmtD(f.rappel):'Appel enregistré');});
   m.querySelectorAll('[data-rap]').forEach(c=>c.onclick=()=>{const d=+c.dataset.rap;const el=document.getElementById('drap');if(!d){el.value='';}else{const x=new Date();x.setDate(x.getDate()+d);el.value=x.toISOString().slice(0,10);}document.getElementById('draplbl').textContent=el.value?rappelTxt(el.value):'Aucune date fixée';});
   const dr=document.getElementById('drap');if(dr)dr.onchange=()=>{document.getElementById('draplbl').textContent=dr.value?rappelTxt(dr.value):'Aucune date fixée';};
   on('dedit',()=>formCoord(id));
@@ -1314,6 +1348,95 @@ function dedoublonner(){
 }
 
 
+
+/* ---------- serveur d'équipe (Supabase) : une seule base pour tous les postes ---------- */
+const SERVEUR_DEFAUT={url:'https://zsdozcqilsnwdrnjetbr.supabase.co',cle:'sb_publishable_PX-wR4B5kjMvi-VAnfCY2w_B0ocvwL0'};
+const KSV='dombase:serveur', KSYNC='dombase:sync';
+const Serveur=(()=>{
+  let cfg=null, dernier='', timer=null, occupe=false, etat='off', chaine=Promise.resolve();
+  const serie=fn=>{const p=chaine.then(fn,fn);chaine=p.catch(()=>{});return p;};
+  const idx=()=>{const m=new Map();fiches.forEach(f=>[cleFiche(f),...clesDoublon(f)].forEach(k=>{if(!m.has(k))m.set(k,f);}));return m;};
+  const kServ=f=>f._k||(f._k=(f.source==='Saisie manuelle'||(f.source||'').startsWith('Import'))?'m:'+f.id:cleFiche(f));
+  const hdr=()=>({'apikey':cfg.cle,'Authorization':'Bearer '+cfg.cle,'Content-Type':'application/json','Prefer':'resolution=merge-duplicates,return=minimal'});
+  const url=(p)=>cfg.url.replace(/\/$/,'')+'/rest/v1/dombase_fiches'+p;
+  async function charger(){try{const c=await Store.get(KSV);cfg=(c&&c.url&&c.cle)?c:(SERVEUR_DEFAUT.url?SERVEUR_DEFAUT:null);dernier=(await Store.get(KSYNC))||'';}catch(e){cfg=null;}}
+  function fusion(local,serv){
+    // le serveur porte la version la plus récente sauf pour l'historique, qui est réuni
+    const d=serv.data||{};const plusRecent=!local._upd||(serv.updated_at&&serv.updated_at>local._upd);
+    const vus=new Set((local.suivi||[]).map(h=>h.d+'|'+h.t+'|'+h.par));
+    (d.suivi||[]).forEach(h=>{if(!vus.has(h.d+'|'+h.t+'|'+h.par)){local.suivi=local.suivi||[];local.suivi.push(h);vus.add(h.d+'|'+h.t+'|'+h.par);}});
+    if(plusRecent){
+      ['naf','naf_lib','secteur','secteur_src','siret','siren','dirigeant','siege','enrichi','enrichi_par','enrich_etat','statut','rappel','fiche_visee','email','tel','tel2','adresse','cp','ville','dept','territoire','raison_sociale','nom','prenom','fonction','effectif','site','type_lead','fiche_origine','luminaires'].forEach(k=>{if(d[k]!==undefined)local[k]=d[k];});
+      if(d.ops)local.ops=d.ops;if(d.autres)local.autres=d.autres;if(d.contacts)local.contacts=d.contacts;
+      local._upd=serv.updated_at;local._par=serv.updated_by||'';
+    }else{
+      // le local est plus récent : on complète seulement ce qui manque
+      ['naf','naf_lib','secteur','secteur_src','siret','siren','email','tel','dirigeant','enrichi','enrichi_par'].forEach(k=>{if(!local[k]&&d[k])local[k]=d[k];});
+      (d.autres||[]).forEach(a=>{local.autres=local.autres||[];if(!local.autres.some(x=>x.siren===a.siren))local.autres.push(a);});
+    }
+    local._h=JSON.stringify(compact(local));if(plusRecent&&!local._dirty)local._dirty=false;
+  }
+  async function tirerBrut(tout){
+    if(!cfg)return 0;etat='sync';majBadge();
+    try{
+      let n=0,off=0;const m=idx();const depuis=tout?'':dernier;let maxUpd=dernier;
+      while(true){
+        const q='?select=k,data,updated_at,updated_by&order=updated_at.asc&limit=500&offset='+off+(depuis?'&updated_at=gte.'+encodeURIComponent(depuis):'');
+        const r=await fetch(url(q),{headers:hdr()});if(!r.ok)throw new Error('HTTP '+r.status);
+        const rows=await r.json();
+        rows.forEach(row=>{const d=row.data||{};let f=m.get(row.k);if(!f)for(const k of (d._cles||[])){if(m.has(k)){f=m.get(k);break;}}
+          if(f){fusion(f,row);}else if(row.k.startsWith('m:')||!d._ref){const nf=Object.assign({id:uid(),statut:'Non traité',suivi:[],ops:[],naf:'',naf_lib:'',enrichi:'',email:'',secteur:'',secteur_src:'',fiche_origine:'',type_lead:''},d,{_k:row.k,_upd:row.updated_at,_par:row.updated_by||''});delete nf._cles;delete nf._ref;fiches.push(nf);[cleFiche(nf),...clesDoublon(nf)].forEach(k=>{if(!m.has(k))m.set(k,nf);});nf._h=JSON.stringify(compact(nf));nf._dirty=false;}
+          if(row.updated_at>maxUpd)maxUpd=row.updated_at;n++;});
+        if(rows.length<500)break;off+=500;
+      }
+      if(n){fiches.forEach(recalc);}
+      dernier=maxUpd;await Store.set(KSYNC,dernier);etat='ok';
+      return n;
+    }catch(e){etat='err';throw e;}finally{majBadge();}
+  }
+  const tirer=tout=>serie(()=>tirerBrut(tout));
+  const pousser=tout=>serie(()=>pousserBrut(tout));
+  async function pousserBrut(tout){
+    if(!cfg)return 0;
+    if(!tout){try{await tirerBrut();}catch(e){}}
+    const lot=fiches.filter(f=>tout||f._dirty!==false);if(!lot.length){etat='ok';majBadge();return 0;}
+    etat='sync';majBadge();
+    try{
+      for(let i=0;i<lot.length;i+=200){
+        const body=lot.slice(i,i+200).map(f=>{const d=compact(f);delete d._h;delete d._dirty;delete d._k;delete d.id;d._cles=[cleFiche(f),...clesDoublon(f)];d._ref=!(f.source==='Saisie manuelle'||(f.source||'').startsWith('Import'));return{k:kServ(f),data:d,updated_at:f._upd||new Date().toISOString(),updated_by:f._par||(user&&user.nom)||''};});
+        const r=await fetch(url(''),{method:'POST',headers:hdr(),body:JSON.stringify(body)});if(!r.ok)throw new Error('HTTP '+r.status+' '+(await r.text()).slice(0,120));
+      }
+      lot.forEach(f=>{f._dirty=false;});etat='ok';majBadge();return lot.length;
+    }catch(e){etat='err';majBadge();throw e;}
+  }
+  function majBadge(){const b=document.getElementById('gsync');if(!b)return;if(!cfg){b.style.display='none';return;}b.style.display='';b.className='gsync '+etat;b.title=etat==='ok'?'Serveur d\'équipe connecté':etat==='sync'?'Synchronisation…':etat==='err'?'Serveur injoignable — les données restent sur ce poste':'';b.textContent=etat==='ok'?'● équipe':etat==='sync'?'○ sync…':etat==='err'?'● hors ligne':'';}
+  function demarrer(){if(timer)clearInterval(timer);if(!cfg)return;timer=setInterval(async()=>{try{const n=await tirer();if(n){render();}}catch(e){}},45000);}
+  async function tester(u,c){const r=await fetch(u.replace(/\/$/,'')+'/rest/v1/dombase_fiches?select=k&limit=1',{headers:{'apikey':c,'Authorization':'Bearer '+c}});if(!r.ok)throw new Error('HTTP '+r.status);return true;}
+  return{charger,tirer,pousser,demarrer,tester,majBadge,actif:()=>!!cfg,cfg:()=>cfg,async definir(u,c){cfg=u&&c?{url:u,cle:c}:null;await Store.set(KSV,cfg||{});dernier='';await Store.set(KSYNC,'');}};
+})();
+function formServeur(){
+  const m=document.getElementById('modal');const c=Serveur.cfg()||{};
+  m.innerHTML=`<div class="ovl" id="ovl"><div class="pane" onclick="event.stopPropagation()">
+    <header><h2>Serveur d'équipe</h2><button class="x" id="cx" style="margin-left:auto">×</button></header>
+    <p class="sm mut">Une fois connecté, tous les postes (vous, Samuel, Katia, Vincent, les télépros) lisent et écrivent la même base : appels, rappels, enrichissements et arbitrages sont partagés en temps réel.</p>
+    <div class="field"><label class="f">Adresse du projet Supabase</label><input type="url" id="sv_url" value="${esc(c.url||'')}" placeholder="https://xxxx.supabase.co"></div>
+    <div class="field"><label class="f">Clé « anon public »</label><input type="text" id="sv_cle" value="${esc(c.cle||'')}" placeholder="eyJ…"></div>
+    <div class="xs" id="sv_msg" style="min-height:16px;margin-bottom:8px"></div>
+    <div class="actions"><button class="btn" id="sv_ok">Connecter et synchroniser</button>${c.url?'<button class="btn g" id="sv_off">Déconnecter</button>':''}<button class="btn g" id="sv_cancel" style="margin-left:auto">Annuler</button></div>
+  </div></div>`;
+  document.getElementById('ovl').onclick=closeModal;document.getElementById('cx').onclick=closeModal;document.getElementById('sv_cancel').onclick=closeModal;
+  const off=document.getElementById('sv_off');if(off)off.onclick=async()=>{await Serveur.definir('','');Serveur.majBadge();closeModal();toast('Serveur déconnecté');};
+  document.getElementById('sv_ok').onclick=async()=>{
+    const u=document.getElementById('sv_url').value.trim(),k=document.getElementById('sv_cle').value.trim();const msg=document.getElementById('sv_msg');
+    if(!u||!k){msg.textContent='Les deux champs sont nécessaires.';return;}
+    msg.textContent='Test de connexion…';
+    try{await Serveur.tester(u,k);}catch(e){msg.innerHTML='<span style="color:var(--rouge)">Connexion refusée ('+esc(e.message)+'). Vérifiez l\'adresse, la clé, et que la table a bien été créée.</span>';return;}
+    await Serveur.definir(u,k);msg.textContent='Connecté. Récupération de la base d\'équipe…';
+    try{const n=await Serveur.tirer(true);const p=await Serveur.pousser(true);await save();Serveur.demarrer();closeModal();render();toast(`Serveur connecté · ${n} fiches reçues · ${p} envoyées`);}
+    catch(e){msg.innerHTML='<span style="color:var(--rouge)">Synchronisation échouée : '+esc(e.message)+'</span>';}
+  };
+}
+
 /* ---------- partage d'activité entre postes ---------- */
 function exporterActivite(){
   const items=fiches.filter(f=>(f.suivi&&f.suivi.length)||(f.naf&&f.enrichi_par)||f.rappel||(f.statut&&f.statut!=='Non traité')||(f.autres&&f.autres.length)).map(f=>({k:[cleFiche(f),...clesDoublon(f)],nom:nomClient(f),statut:f.statut,rappel:f.rappel,fiche_visee:f.fiche_visee,suivi:f.suivi||[],naf:f.naf,naf_lib:f.naf_lib,secteur:f.secteur,secteur_src:f.secteur_src,siret:f.siret,siren:f.siren,enrichi:f.enrichi,enrichi_par:f.enrichi_par,autres:f.autres||[],dirigeant:f.dirigeant,email:f.email,tel:f.tel}));
@@ -1478,7 +1601,7 @@ function vApropos(){return `<div class="page"><h1>DomBase</h1>
   <h2>L'enrichissement</h2>
   <p>Le code NAF officiel, récupéré auprès de l'INSEE, donne le secteur réel de chaque entreprise. C'est la clé du croisement avec le catalogue des fiches CEE : un hôtel, une exploitation agricole et un garage n'ouvrent pas les mêmes droits.</p></div>`;}
 function vAide(){return `<div class="page"><h1>Guide</h1>
-  <h2>0. Travailler à plusieurs</h2><p>Comptes : DB-100 Eythan, DB-101 Samuel, DB-102 Katia, DB-103 Vincent, DB-104 et DB-105 télépros — mot de passe 2026, tous au même niveau. Chaque poste garde ses données dans son navigateur. Pour partager le travail : menu → « Envoyer mon activité » (un petit fichier), et sur l'autre poste menu → « Importer l'activité d'un collègue ». Les appels, statuts, rappels et enrichissements sont fusionnés sans doublon, et le tableau « Activité par utilisateur » se met à jour. Une solution avec serveur partagé supprimerait cette étape.</p><h2>1. Enrichir</h2><p>À faire depuis l'adresse internet de DomBase, dans Safari ou Chrome. Onglet Enrichissement, bouton Lancer. La plateforme interroge le registre national entreprise par entreprise et enregistre chaque résultat directement dans la base : les secteurs apparaissent aussitôt dans Base clients. Vous pouvez changer d'onglet, le traitement continue (une barre en haut l'indique), et vous pouvez l'arrêter et le reprendre à tout moment. L'export Excel n'est qu'une sauvegarde : rien à réimporter.</p>
+  <h2>0. Serveur d'équipe</h2><p>Menu → « Connecter le serveur d'équipe », collez l'adresse et la clé du projet Supabase fournies par Eythan. À partir de là, ce poste lit et écrit la même base que tous les autres : chaque appel ou enrichissement est visible partout en moins d'une minute, sans rien envoyer à la main. Le point « ● équipe » en haut confirme la connexion.</p><h2>0 bis. Sans serveur</h2><p>Comptes : DB-100 Eythan, DB-101 Samuel, DB-102 Katia, DB-103 Vincent, DB-104 et DB-105 télépros — mot de passe 2026, tous au même niveau. Chaque poste garde ses données dans son navigateur. Pour partager le travail : menu → « Envoyer mon activité » (un petit fichier), et sur l'autre poste menu → « Importer l'activité d'un collègue ». Les appels, statuts, rappels et enrichissements sont fusionnés sans doublon, et le tableau « Activité par utilisateur » se met à jour. Une solution avec serveur partagé supprimerait cette étape.</p><h2>1. Enrichir</h2><p>À faire depuis l'adresse internet de DomBase, dans Safari ou Chrome. Onglet Enrichissement, bouton Lancer. La plateforme interroge le registre national entreprise par entreprise et enregistre chaque résultat directement dans la base : les secteurs apparaissent aussitôt dans Base clients. Vous pouvez changer d'onglet, le traitement continue (une barre en haut l'indique), et vous pouvez l'arrêter et le reprendre à tout moment. L'export Excel n'est qu'une sauvegarde : rien à réimporter.</p>
   <h2>2. Arbitrer</h2><p>Quand plusieurs entreprises portent le même nom dans le département, elles vous sont proposées côte à côte avec leur adresse et leur activité. Un clic tranche.</p>
   <h2>3. Filtrer</h2><p>Onglet Base clients : secteur, territoire, statut, source. Les cases du tableau de bord sont cliquables et appliquent le filtre correspondant.</p>
   <h2>4. Travailler</h2><p>Ouvrez une fiche, changez son statut, notez vos appels. Sélectionnez plusieurs lignes pour changer le statut en lot ou exporter une liste d'appel.</p>
@@ -1492,10 +1615,11 @@ function openDrawer(){
     <div style="display:flex;align-items:center;gap:10px"><img src="${LOGO_SMALL}" alt="" style="width:34px;height:34px;border-radius:9px"><div class="logo" style="font-size:19px">Dom<span style="color:var(--bleu-clair)">Base</span></div></div>
     <div class="sm mut" style="margin:4px 0 20px">Base de données DOM-TOM</div>
     ${P.map(p=>p?`<button class="dlink ${view===p[0]?'on':''}" data-go="${p[0]}">${p[1]}</button>`:'<div class="dsep"></div>').join('')}
-    <div class="dfoot">Connecté : <b>${esc(user.nom)}</b><br>${fiches.length} fiches · ${fiches.filter(f=>f.naf).length} enrichies<br><div class="chips" style="margin-top:8px"><button class="btn g sm" id="bact">Envoyer mon activité</button><button class="btn g sm" id="bactimp">Importer l'activité d'un collègue</button><input type="file" id="factimp" accept=".json" style="display:none"></div><button class="btn g sm" id="bresync" style="margin-top:8px">Resynchroniser avec le fichier</button><div class="xs mut" style="margin-top:4px">Repart de la base de référence (${DATA.length} fiches) en conservant enrichissements, arbitrages et suivis.</div><br><i style="color:var(--bleu)">Pense bien, tout ira bien.</i></div>
+    <div class="dfoot">Connecté : <b>${esc(user.nom)}</b><br>${fiches.length} fiches · ${fiches.filter(f=>f.naf).length} enrichies<br><div class="chips" style="margin-top:8px"><button class="btn g sm" id="bact">Envoyer mon activité</button><button class="btn g sm" id="bactimp">Importer l'activité d'un collègue</button><input type="file" id="factimp" accept=".json" style="display:none"></div><button class="btn g sm" id="bserv" style="margin-top:8px">${Serveur.actif()?'Serveur d\'équipe : connecté':'Connecter le serveur d\'équipe'}</button> <button class="btn g sm" id="bresync" style="margin-top:8px">Resynchroniser avec le fichier</button><div class="xs mut" style="margin-top:4px">Repart de la base de référence (${DATA.length} fiches) en conservant enrichissements, arbitrages et suivis.</div><br><i style="color:var(--bleu)">Pense bien, tout ira bien.</i></div>
   </div></div>`;
   document.getElementById('dovl').onclick=closeDrawer;
   d.querySelectorAll('[data-go]').forEach(x=>x.onclick=()=>{view=x.dataset.go;closeDrawer();render();});
+  const bsv=document.getElementById('bserv');if(bsv)bsv.onclick=()=>{closeDrawer();formServeur();};
   const ba=document.getElementById('bact');if(ba)ba.onclick=()=>{exporterActivite();};
   const bi=document.getElementById('bactimp');if(bi){const fi=document.getElementById('factimp');bi.onclick=()=>fi.click();fi.onchange=async()=>{if(fi.files[0]){closeDrawer();await importerActivite(fi.files[0]);}};}
   const br=document.getElementById('bresync');if(br)br.onclick=async()=>{if(!confirm('Repartir de la base de référence ? Vos enrichissements, arbitrages, notes et fiches saisies à la main seront conservés.'))return;try{const meta=await Store.get(K+':meta');await Store.set(K+':meta',Object.assign(meta||{},{version:'resync'}));}catch(e){}location.reload();};
@@ -1614,7 +1738,9 @@ document.addEventListener('keydown',e=>{if(e.key==='Escape'){closeModal();closeD
   const connu=s&&ACCES.find(a=>a.login===s.login);
   if(!connu)gate();
   try{await load();}catch(e){}
+  await Serveur.charger();
   if(connu){user={login:connu.login,nom:connu.nom};enter();}
+  if(Serveur.actif()){try{const n=await Serveur.tirer();await Serveur.pousser();if(n&&user)render();}catch(e){}Serveur.demarrer();Serveur.majBadge();}
 })();
 </script>
 </body>
